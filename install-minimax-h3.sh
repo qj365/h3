@@ -1,59 +1,47 @@
 #!/usr/bin/env bash
 #
-# install-minimax-h3.sh - Tai model MiniMax H3 cho ComfyUI
+# install-minimax-h3.sh - Cai dat DUNG cac thanh phan cua 2 workflow Ep41:
+#   02. Minimax H3 - Character Swap LoRA
+#   04. Minimax H3 - Head Swap LoRA
 #
-# Chay SAU khi da cai ComfyUI.
+# Chay SAU khi da cai ComfyUI. Chay 1 lenh, khong can tao file:
 #
-#   chmod +x install-minimax-h3.sh
-#   ./install-minimax-h3.sh
+#   bash <(curl -fsSL https://raw.githubusercontent.com/qj365/h3/main/install-minimax-h3.sh)
 #
-# Bien moi truong:
-#   COMFY_DIR=/root/ComfyUI    Thu muc ComfyUI (mac dinh: ~/ComfyUI)
-#   MODE=i2v|r2v|all           Che do (mac dinh: i2v, gom ca T2V)
-#   QUANT=auto|int8|fp8|bf16   Bien the diffusion (mac dinh: auto theo PyTorch)
-#   ENCODER=nvfp4|int8|bf16    Bien the text encoder (mac dinh: nvfp4)
-#   WITH_EMBEDDINGS=1          Tai them 10 embedding hieu ung
-#   EP41_MODELS=core|all|0     Model cho workflow Ep41 (mac dinh: core)
-#                                core = ref2va int8 (diffusion_models/h3), VAE video int8,
-#                                       LoRA DMAD 4step + character swap + head swap (loras/h3)
-#                                all  = core + LoRA lms/vfx/style/regenerate2k, RealESRGAN,
-#                                       latent upscaler, controlnet pose, SDPose, Flux Klein
-#   VERIFY=0                   Bo qua kiem tra sha256 sau khi tai (mac dinh: kiem tra)
-#   UPDATE_COMFY=0             Bo qua buoc cap nhat ComfyUI len ban moi nhat
-#   WITH_PIXAROMA=0            Bo qua cai node ComfyUI-Pixaroma
-#   WITH_EP41=0                Bo qua tai workflow + anh/video mau Ep41 tu repo qj365/h3
-#   FORCE=1                    Ghi de workflow/input Ep41 neu da co (mac dinh: bo qua)
-#   H3_REF=main                Nhanh cua repo qj365/h3 de tai workflow
-#   DRY_RUN=1                  Chi liet ke, khong tai
-#   HF_TOKEN=hf_xxx            Token Hugging Face neu can
+# Script cai:
+#   - Cap nhat ComfyUI len ban moi nhat
+#   - Node ComfyUI-Pixaroma (+ ffmpeg cho node video)
+#   - Model: ref2va int8 (diffusion_models/h3), text encoder Qwen3-VL nvfp4, VAE video int8, VAE audio,
+#            LoRA DMAD 4step + character swap + head swap (loras/h3)
+#   - Workflow 02 + 04 vao user/default/workflows, 3 file mau (video + 2 anh) vao input
 #
-# Ghi chu ve QUANT:
-#   int8_convrot  - tot nhat, CAN PyTorch cu130
-#   fp8_scaled    - dung khi khong co cu130
-#   bf16          - ~40GB, chi hop GPU >= 48GB
+# Bien moi truong (deu tuy chon):
+#   COMFY_DIR=/workspace/ComfyUI   Thu muc ComfyUI (mac dinh: tu tim)
+#   UPDATE_COMFY=0                 Bo qua buoc cap nhat ComfyUI
+#   WITH_PIXAROMA=0                Bo qua cai node Pixaroma
+#   FORCE=1                        Ghi de workflow/anh/video mau neu da co
+#   VERIFY=0                       Bo qua kiem tra sha256 sau khi tai
+#   H3_REF=main                    Nhanh cua repo qj365/h3
+#   DRY_RUN=1                      Chi liet ke, khong tai
+#   HF_TOKEN=hf_xxx                Token Hugging Face neu can
+#
+# Luu y: ref2va int8_convrot can PyTorch cu130.
 #
 
 set -Eeuo pipefail
 
 # COMFY_DIR duoc xu ly o phan "tim ComfyUI" ben duoi
-MODE="${MODE:-i2v}"
-QUANT="${QUANT:-auto}"
-ENCODER="${ENCODER:-nvfp4}"
-WITH_EMBEDDINGS="${WITH_EMBEDDINGS:-0}"
-EP41_MODELS="${EP41_MODELS:-core}"
-VERIFY="${VERIFY:-1}"
 UPDATE_COMFY="${UPDATE_COMFY:-1}"
 WITH_PIXAROMA="${WITH_PIXAROMA:-1}"
-WITH_EP41="${WITH_EP41:-1}"
 FORCE="${FORCE:-0}"
+VERIFY="${VERIFY:-1}"
 H3_REF="${H3_REF:-main}"
 DRY_RUN="${DRY_RUN:-0}"
 
 HF="https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main"
-TPL="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main"
 KJ="https://huggingface.co/Kijai/MiniMax-H3-experimental/resolve/main"
 AX="https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI/resolve/main"
-H3_TARBALL="https://codeload.github.com/qj365/h3/tar.gz/refs/heads/${H3_REF}"
+H3_RAW="https://raw.githubusercontent.com/qj365/h3/${H3_REF}"
 PIXAROMA_URLS=(https://gitlab.com/pixaroma/comfyui-pixaroma.git
                https://github.com/pixaroma/ComfyUI-Pixaroma.git)
 
@@ -123,61 +111,22 @@ Chi dinh thu cong: COMFY_DIR=/duong/dan/ComfyUI ./install-minimax-h3.sh"
   fi
 fi
 
-case "$MODE" in i2v|t2v|r2v|all) ;; *) die "MODE khong hop le: $MODE" ;; esac
-[[ "$MODE" == "t2v" ]] && MODE="i2v"   # cung model, i2v lam duoc ca t2v
-
 ok "ComfyUI: $COMFY_DIR"
-
-# ---------- doc GPU ----------
-
-VRAM=0
-if command -v nvidia-smi >/dev/null 2>&1; then
-  VRAM="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || echo 0)"
-  GPU="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo '?')"
-  ok "GPU: $GPU (${VRAM} MiB)"
-fi
-
-# ---------- chon bien the diffusion ----------
 
 PY="python3"
 [[ -x "$COMFY_DIR/venv/bin/python" ]] && PY="$COMFY_DIR/venv/bin/python"
 
+# ---------- PyTorch (ref2va int8_convrot can cu130) ----------
+
 TORCH_VER=""
 $PY -c 'import torch' 2>/dev/null && TORCH_VER="$($PY -c 'import torch; print(torch.__version__)' 2>/dev/null)"
-
-if [[ "$QUANT" == "auto" ]]; then
-  if [[ -z "$TORCH_VER" ]]; then
-    warn "Chua thay PyTorch, mac dinh chon fp8_scaled cho an toan"
-    QUANT="fp8"
-  elif [[ "$TORCH_VER" == *cu13* ]]; then
-    QUANT="int8"
-    ok "PyTorch $TORCH_VER -> dung int8_convrot (ban tot nhat)"
-  else
-    QUANT="fp8"
-    warn "PyTorch $TORCH_VER khong phai cu130 -> dung fp8_scaled"
-    warn "Muon dung int8_convrot: cai lai PyTorch cu130 roi chay lai voi QUANT=int8"
-  fi
+if [[ -z "$TORCH_VER" ]]; then
+  warn "Chua thay PyTorch trong $PY"
+elif [[ "$TORCH_VER" == *cu13* ]]; then
+  ok "PyTorch $TORCH_VER"
+else
+  warn "PyTorch $TORCH_VER khong phai cu130 - model int8_convrot co the khong chay"
 fi
-
-case "$QUANT" in
-  int8) SUFFIX="pruned_int8_convrot" ;;
-  fp8)  SUFFIX="pruned_fp8_scaled"   ;;
-  bf16) SUFFIX="pruned_bf16"
-        [[ "$VRAM" -gt 0 && "$VRAM" -lt 45000 ]] && \
-          warn "pruned_bf16 khoang 40GB, GPU ban co ${VRAM} MiB - se phai offload nhieu" ;;
-  *)    die "QUANT khong hop le: $QUANT (int8 / fp8 / bf16)" ;;
-esac
-
-case "$ENCODER" in
-  nvfp4) ENC_FILE="qwen3vl_32b_minimax_h3_nvfp4_awq" ;;
-  int8)  ENC_FILE="qwen3vl_32b_minimax_h3_int8_convrot" ;;
-  bf16)  ENC_FILE="qwen3vl_32b_minimax_h3_bf16" ;;
-  *)     die "ENCODER khong hop le: $ENCODER" ;;
-esac
-
-log "Diffusion:    *_${SUFFIX}"
-log "Text encoder: ${ENC_FILE}"
-log "Che do:       ${MODE}"
 
 # ---------- cap nhat ComfyUI ----------
 
@@ -342,172 +291,61 @@ download() {
 }
 
 M="$COMFY_DIR/models"
-mkdir -p "$M"/{diffusion_models,text_encoders,vae,loras,embeddings} \
+mkdir -p "$M"/{diffusion_models/h3,text_encoders,vae,loras/h3} \
          "$COMFY_DIR/user/default/workflows" "$COMFY_DIR/input"
 
 [[ "$DRY_RUN" == "1" ]] && { echo; warn "DRY_RUN=1 - chi liet ke file:"; echo; }
 
-# ---------- dung chung ----------
+# ---------- model ----------
+# Duong dan lay tu ghi chu "Download Models" trong chinh 2 workflow.
+# Workflow goi model/LoRA theo "h3/<file>" nen phai nam trong thu muc con h3.
 
 echo
-log "=== Dung chung ==="
-download "$HF/text_encoders/${ENC_FILE}.safetensors" "$M/text_encoders/${ENC_FILE}.safetensors"
-download "$HF/vae/minimax_h3_video_vae_fp16.safetensors" "$M/vae/minimax_h3_video_vae_fp16.safetensors"
-download "$HF/vae/minimax_h3_audio_vae_fp32.safetensors" "$M/vae/minimax_h3_audio_vae_fp32.safetensors"
-
-# ---------- diffusion ----------
-
-if [[ "$MODE" == "i2v" || "$MODE" == "all" ]]; then
-  echo
-  log "=== fl2va (T2V + I2V) ==="
-  download "$HF/diffusion_models/minimax_h3_fl2va_${SUFFIX}.safetensors" \
-           "$M/diffusion_models/minimax_h3_fl2va_${SUFFIX}.safetensors"
-fi
-
-if [[ "$MODE" == "r2v" || "$MODE" == "all" ]]; then
-  echo
-  log "=== ref2va (R2V) ==="
-  if [[ "$SUFFIX" == "pruned_int8_convrot" && "$EP41_MODELS" != "0" ]]; then
-    echo "    (dung ban trong diffusion_models/h3 o phan Ep41, tao symlink)"
-  else
-    download "$HF/diffusion_models/minimax_h3_ref2va_${SUFFIX}.safetensors" \
-             "$M/diffusion_models/minimax_h3_ref2va_${SUFFIX}.safetensors"
-  fi
-fi
-
-# ---------- model cho workflow Ep41 ----------
-# Duong dan/thu muc lay tu chinh ghi chu "Download Models" trong cac workflow Ep41.
-# Workflow goi model theo "h3/<file>" nen phai nam trong thu muc con h3.
-
-if [[ "$EP41_MODELS" != "0" ]]; then
-  echo
-  log "=== Ep41 model (${EP41_MODELS}) ==="
-  # Diffusion ref2va int8 (can PyTorch cu130)
-  download "$HF/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors" \
-           "$M/diffusion_models/h3/minimax_h3_ref2va_pruned_int8_convrot.safetensors"
-  # VAE video int8 (workflow Ep41 dung ban nay, khac ban fp16 o tren)
-  download "$HF/vae/minimax_h3_video_vae_int8_convrot.safetensors" \
-           "$M/vae/minimax_h3_video_vae_int8_convrot.safetensors"
-  # LoRA
-  download "$KJ/loras/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors" \
-           "$M/loras/h3/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors"
-  download "$AX/loras/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors" \
-           "$M/loras/h3/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors"
-  download "$AX/loras/minimax_h3_head_swap_v1.0_r32.safetensors" \
-           "$M/loras/h3/minimax_h3_head_swap_v1.0_r32.safetensors"
-
-  if [[ "$EP41_MODELS" == "all" ]]; then
-    download "$AX/loras/minimax_h3_lms_v1.0_r64.safetensors" \
-             "$M/loras/h3/minimax_h3_lms_v1.0_r64.safetensors"
-    download "$AX/loras/minimax_h3_vfx_edit_v1.0_r128.safetensors" \
-             "$M/loras/h3/minimax_h3_vfx_edit_v1.0_r128.safetensors"
-    download "$AX/loras/minimax_h3_style_transfer_v1.0_r64.safetensors" \
-             "$M/loras/h3/minimax_h3_style_transfer_v1.0_r64.safetensors"
-    download "https://huggingface.co/DrakenZA/Open-H3-Regenerate-2K-ComfyUI/resolve/main/open_h3_regenerate_2k_comfy_swiglu_fixed.safetensors" \
-             "$M/loras/h3/open_h3_regenerate_2k_comfy_swiglu_fixed.safetensors"
-    download "https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x2.pth" \
-             "$M/upscale_models/RealESRGAN_x2.pth"
-    download "https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/resolve/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors" \
-             "$M/latent_upscale_models/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors"
-    download "$HF/model_patches/minimax_h3_fun_controlnet_union_pruned_int8_convrot.safetensors" \
-             "$M/model_patches/minimax_h3_fun_controlnet_union_pruned_int8_convrot.safetensors"
-    download "https://huggingface.co/Comfy-Org/SDPose/resolve/main/checkpoints/sdpose_wholebody_fp16.safetensors" \
-             "$M/checkpoints/sdpose_wholebody_fp16.safetensors"
-    download "https://huggingface.co/Comfy-Org/SDPose/resolve/main/diffusion_models/rt_detr_v4-x-hgnet_fp16.safetensors" \
-             "$M/diffusion_models/rt_detr_v4-x-hgnet_fp16.safetensors"
-    download "https://huggingface.co/Winnougan/Klein9b-Distilled-Base-INT8-Convrot/resolve/main/flux-2-klein-9b-int8-convrot.safetensors" \
-             "$M/diffusion_models/flux2/flux-2-klein-9b-int8-convrot.safetensors"
-    download "https://huggingface.co/Comfy-Org/flux2-klein-9B/resolve/main/split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors" \
-             "$M/text_encoders/qwen_3_8b_fp8mixed.safetensors"
-    download "https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors" \
-             "$M/vae/flux2-vae.safetensors"
-  fi
-
-  # Template Comfy goi ref2va int8 o thu muc goc -> symlink toi ban trong h3/
-  R2V_LINK="$M/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors"
-  if [[ "$DRY_RUN" != "1" && ( "$MODE" == "r2v" || "$MODE" == "all" ) ]] \
-     && [[ ! -e "$R2V_LINK" || -L "$R2V_LINK" ]]; then
-    ln -sf "h3/minimax_h3_ref2va_pruned_int8_convrot.safetensors" "$R2V_LINK"
-  fi
-fi
-
-# ---------- embeddings ----------
-
-if [[ "$WITH_EMBEDDINGS" == "1" ]]; then
-  echo
-  log "=== Embeddings (hieu ung) ==="
-  for e in art_is_explosion blooming_flowers bullet_time dark_magic fire_breath \
-           four_seasons kiss_camera spiral_ascent storm_magic truman_show; do
-    download "$HF/embeddings/minimaxh3_${e}.safetensors" \
-             "$M/embeddings/minimaxh3_${e}.safetensors"
-  done
-fi
-
-# ---------- workflow + anh mau ----------
+log "=== Model ==="
+download "$HF/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors" \
+         "$M/diffusion_models/h3/minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+download "$HF/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors" \
+         "$M/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+download "$HF/vae/minimax_h3_video_vae_int8_convrot.safetensors" \
+         "$M/vae/minimax_h3_video_vae_int8_convrot.safetensors"
+download "$HF/vae/minimax_h3_audio_vae_fp32.safetensors" \
+         "$M/vae/minimax_h3_audio_vae_fp32.safetensors"
 
 echo
-log "=== Workflow ==="
+log "=== LoRA ==="
+download "$KJ/loras/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors" \
+         "$M/loras/h3/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors"
+download "$AX/loras/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors" \
+         "$M/loras/h3/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors"
+download "$AX/loras/minimax_h3_head_swap_v1.0_r32.safetensors" \
+         "$M/loras/h3/minimax_h3_head_swap_v1.0_r32.safetensors"
+
+# ---------- workflow + file mau ----------
+
+# Cac file nay nho, tai lai khi FORCE=1 (hoac chua co) - khong kiem tra sha256
+echo
+log "=== Workflow + file mau (qj365/h3@${H3_REF}) ==="
 W="$COMFY_DIR/user/default/workflows"
+enc() { printf '%s' "${1// /%20}"; }
 
-if [[ "$MODE" == "i2v" || "$MODE" == "all" ]]; then
-  download "$TPL/templates/video_minimax_h3_t2v.json" "$W/minimax_h3_t2v.json"
-  download "$TPL/templates/video_minimax_h3_i2v.json" "$W/minimax_h3_i2v.json"
-  download "$TPL/input/transparent_rgb_gaming_mouse.png" "$COMFY_DIR/input/transparent_rgb_gaming_mouse.png"
-fi
-if [[ "$MODE" == "r2v" || "$MODE" == "all" ]]; then
-  download "$TPL/templates/video_minimax_h3_r2v.json" "$W/minimax_h3_r2v.json"
-  download "$TPL/input/red_superboy_on_city_roof.png" "$COMFY_DIR/input/red_superboy_on_city_roof.png"
-  download "$TPL/input/mecha_dragon_lightning.png" "$COMFY_DIR/input/mecha_dragon_lightning.png"
-fi
-
-# ---------- Ep41: workflow + anh/video mau tu repo qj365/h3 ----------
-
-fetch() {
-  if command -v curl >/dev/null 2>&1; then curl -fsSL "$1"
-  elif command -v wget >/dev/null 2>&1; then wget -qO- "$1"
-  else return 1; fi
+get_small() { # <duong dan trong repo> <thu muc dich>
+  local rel="$1" dstdir="$2" name
+  name="$(basename "$rel")"
+  [[ "$FORCE" == "1" && "$DRY_RUN" != "1" ]] && rm -f "$dstdir/$name"
+  download "$H3_RAW/$(enc "$rel")" "$dstdir/$name"
 }
 
-# copy_dir <nguon> <dich> : chi chep file, bo qua file da co tru khi FORCE=1
-copy_dir() {
-  local src="$1" dst="$2" f n new=0 skip=0
-  if [[ ! -d "$src" ]]; then
-    warn "Repo khong co thu muc $(basename "$src")"
-    return 0
-  fi
-  mkdir -p "$dst"
-  while IFS= read -r -d '' f; do
-    n="$(basename "$f")"
-    if [[ -e "$dst/$n" && "$FORCE" != "1" ]]; then
-      skip=$((skip + 1))
-    else
-      cp -f "$f" "$dst/$n"
-      new=$((new + 1))
-    fi
-  done < <(find "$src" -maxdepth 1 -type f -print0)
-  ok "$(basename "$src") -> $dst  (moi: $new, bo qua vi da co: $skip)"
-}
+get_small "workflows/02. Minimax H3 - Character Swap LoRA.json" "$W"
+get_small "workflows/04. Minimax H3 - Head Swap LoRA.json" "$W"
+get_small "input/Ep41 Man Talking 10s.mp4" "$COMFY_DIR/input"
+get_small "input/Ep41 Knight Face Clean.jpg" "$COMFY_DIR/input"
+get_small "input/Ep41 Knight Sheet.jpg" "$COMFY_DIR/input"
 
-if [[ "$WITH_EP41" == "1" ]]; then
-  echo
-  log "=== Ep41: workflow + input (qj365/h3@${H3_REF}) ==="
-  if [[ "$DRY_RUN" == "1" ]]; then
-    echo "    workflows/*.json -> $W"
-    echo "    input/*          -> $COMFY_DIR/input"
-  else
-    TMP="$(mktemp -d)"
-    log "Tai $H3_TARBALL"
-    fetch "$H3_TARBALL" | tar -xz -C "$TMP" --strip-components=1 \
-      || { rm -rf "$TMP"; die "Khong tai/giai nen duoc repo qj365/h3 (repo private? sai nhanh H3_REF?)"; }
-    # Workflow luu duong dan model kieu Windows ("h3\\file"), Linux can "h3/file"
-    if [[ -d "$TMP/workflows" ]]; then
-      find "$TMP/workflows" -maxdepth 1 -name '*.json' -print0 \
-        | xargs -0 -r sed -i 's#"\([A-Za-z0-9_-]*\)\\\\\([^"\\]*\.safetensors"\)#"\1/\2#g'
-    fi
-    copy_dir "$TMP/workflows" "$W"
-    copy_dir "$TMP/input" "$COMFY_DIR/input"
-    rm -rf "$TMP"
-  fi
+# Workflow luu duong dan model kieu Windows ("h3\\file"), Linux can "h3/file"
+if [[ "$DRY_RUN" != "1" ]]; then
+  for f in "$W/02. Minimax H3 - Character Swap LoRA.json" "$W/04. Minimax H3 - Head Swap LoRA.json"; do
+    [[ -f "$f" ]] && sed -i 's#"\([A-Za-z0-9_-]*\)\\\\\([^"\\]*\.safetensors"\)#"\1/\2#g' "$f"
+  done
 fi
 
 # ---------- node ComfyUI-Pixaroma ----------
@@ -571,33 +409,17 @@ if [[ "$DRY_RUN" == "1" ]]; then
 fi
 
 echo
-ok "Hoan tat ($TOTAL file moi)"
+ok "Hoan tat ($TOTAL file moi tai)"
 echo
-du -sh "$M/diffusion_models" "$M/text_encoders" "$M/vae" "$M/loras" 2>/dev/null || true
+du -sh "$M/diffusion_models/h3" "$M/text_encoders" "$M/vae" "$M/loras/h3" 2>/dev/null || true
 
 cat <<EOF
 
 Buoc tiep theo:
-  1. Khoi dong lai ComfyUI:  ./run-comfyui.sh
+  1. Khoi dong lai ComfyUI
   2. Tren trinh duyet bam Ctrl+Shift+R (de nap node Pixaroma)
-  3. Workflow > Browse > chon minimax_h3_* hoac cac workflow Ep41 (01..27)
-
-Thiet lap nen dung:
-  - Resolution Selector: Megapixels = 0.98  (ra 1344x768)
-    Tranh moc 1.0 - cho ra 1376x768, vuot gioi han cua model
-  - Multiple = 32
-  - Duration chot theo luoi 17k+5 frame @ 24fps
-
-File dang dung: minimax_h3_*_${SUFFIX}
+  3. Workflow > Browse > chon:
+       02. Minimax H3 - Character Swap LoRA
+       04. Minimax H3 - Head Swap LoRA
+  4. Node Load CLIP phai de type = minimax
 EOF
-
-if [[ "$WITH_EP41" == "1" && "$MODE" == "i2v" ]]; then
-  echo
-  warn "Nhieu workflow Ep41 (character swap, head swap...) dung model ref2va."
-  warn "Chay lai voi MODE=all de tai them ref2va."
-fi
-
-if [[ "$QUANT" == "fp8" ]]; then
-  echo
-  warn "Ban dang dung fp8_scaled. Ban int8_convrot tot hon nhung can PyTorch cu130."
-fi
