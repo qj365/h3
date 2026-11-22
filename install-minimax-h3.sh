@@ -286,12 +286,13 @@ fi
 if [[ "$WITH_EXTRA_LORAS" == "1" ]]; then
   echo
   log "=== LoRA them ==="
-  # DMAD 4 buoc (workflow Ep41 dung file nay)
+  # Workflow Ep41 goi LoRA theo duong dan "h3/<ten file>" nen phai nam trong loras/h3
+  # DMAD 4 buoc
   download "$KJ/loras/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors" \
-           "$M/loras/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors"
+           "$M/loras/h3/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors"
   # Character swap cho ref2va
   download "$AX/loras/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors" \
-           "$M/loras/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors"
+           "$M/loras/h3/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors"
 fi
 
 # ---------- embeddings ----------
