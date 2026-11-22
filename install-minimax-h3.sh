@@ -274,7 +274,8 @@ fetch_file() {
       [[ -n "${HF_TOKEN:-}" ]] && a=(--header "Authorization: Bearer $HF_TOKEN")
       aria2c -c -x8 -s8 -k1M --console-log-level=warn --summary-interval=15 \
         "${a[@]}" -d "$dir" -o "$name" "$url" \
-        || die "Tai that bai: $name (chay lai script de tiep tuc tai)"
+        || { warn "Dia: $(df -h "$dir" 2>/dev/null | awk 'NR==2{print $4" trong / "$2" ("$5" da dung)"}')"
+             die "Tai that bai: $name (neu het dung luong: xoa file khong dung roi chay lai, se tiep tuc tai)"; }
       ;;
     curl)
       local h=()
@@ -302,6 +303,18 @@ download() {
   fi
 
   mkdir -p "$dir"
+
+  # Ban cu cua script de file o thu muc cha (vd diffusion_models/x.safetensors); workflow Ep41 can
+  # no trong thu muc con h3/ hoac flux2/ -> chuyen sang do, khong tai them mot ban nua (tiet kiem dia)
+  local up
+  up="$(dirname "$dir")/$name"
+  if [[ ! -s "$dest" && -f "$up" && ! -L "$up" && "$(basename "$dir")" =~ ^(h3|flux2)$ ]]; then
+    log "Da co ban o $(dirname "$dir") - chuyen vao $(basename "$dir")/: $name"
+    rm -f "$dest" "$dest.aria2"
+    mv "$up" "$dest"
+    rm -f "$up.verified"
+  fi
+
   # aria2c tao san file day du dung luong (toan so 0) ngay tu dau; file .aria2 con ton tai
   # nghia la tai chua xong -> khong coi la "da co", de aria2c -c tiep tuc tai
   if [[ -s "$dest" && ! -e "$dest.aria2" ]]; then
