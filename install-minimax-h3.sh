@@ -12,7 +12,6 @@
 #   MODE=i2v|r2v|all           Che do (mac dinh: i2v, gom ca T2V)
 #   QUANT=auto|int8|fp8|bf16   Bien the diffusion (mac dinh: auto theo PyTorch)
 #   ENCODER=nvfp4|int8|bf16    Bien the text encoder (mac dinh: nvfp4)
-#   WITH_TURBO=0               Bo qua turbo LoRA
 #   WITH_EMBEDDINGS=1          Tai them 10 embedding hieu ung
 #   WITH_EXTRA_LORAS=0         Bo qua 2 LoRA them (DMAD 4step + character swap)
 #   WITH_PIXAROMA=0            Bo qua cai node ComfyUI-Pixaroma
@@ -34,7 +33,6 @@ set -Eeuo pipefail
 MODE="${MODE:-i2v}"
 QUANT="${QUANT:-auto}"
 ENCODER="${ENCODER:-nvfp4}"
-WITH_TURBO="${WITH_TURBO:-1}"
 WITH_EMBEDDINGS="${WITH_EMBEDDINGS:-0}"
 WITH_EXTRA_LORAS="${WITH_EXTRA_LORAS:-1}"
 WITH_PIXAROMA="${WITH_PIXAROMA:-1}"
@@ -44,7 +42,6 @@ H3_REF="${H3_REF:-main}"
 DRY_RUN="${DRY_RUN:-0}"
 
 HF="https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main"
-LX="https://huggingface.co/lightx2v/Minimax-h3-Turbo/resolve/main"
 TPL="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main"
 KJ="https://huggingface.co/Kijai/MiniMax-H3-experimental/resolve/main"
 AX="https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI/resolve/main"
@@ -260,14 +257,6 @@ if [[ "$MODE" == "i2v" || "$MODE" == "all" ]]; then
   log "=== fl2va (T2V + I2V) ==="
   download "$HF/diffusion_models/minimax_h3_fl2va_${SUFFIX}.safetensors" \
            "$M/diffusion_models/minimax_h3_fl2va_${SUFFIX}.safetensors"
-  if [[ "$WITH_TURBO" == "1" ]]; then
-    # 4 buoc, huan luyen rieng cho 768p - dung do phan giai tran cua ban open weights
-    download "$HF/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors" \
-             "$M/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"
-    # 8 buoc, ban workflow mau tham chieu
-    download "$LX/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors" \
-             "$M/loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
-  fi
 fi
 
 if [[ "$MODE" == "r2v" || "$MODE" == "all" ]]; then
@@ -275,10 +264,6 @@ if [[ "$MODE" == "r2v" || "$MODE" == "all" ]]; then
   log "=== ref2va (R2V) ==="
   download "$HF/diffusion_models/minimax_h3_ref2va_${SUFFIX}.safetensors" \
            "$M/diffusion_models/minimax_h3_ref2va_${SUFFIX}.safetensors"
-  if [[ "$WITH_TURBO" == "1" ]]; then
-    download "$HF/loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors" \
-             "$M/loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
-  fi
 fi
 
 # ---------- LoRA them ----------
@@ -451,7 +436,6 @@ Thiet lap nen dung:
     Tranh moc 1.0 - cho ra 1376x768, vuot gioi han cua model
   - Multiple = 32
   - Duration chot theo luoi 17k+5 frame @ 24fps
-  - turbo_mode: bat de thu prompt (nhanh), tat khi render ban cuoi
 
 File dang dung: minimax_h3_*_${SUFFIX}
 EOF
