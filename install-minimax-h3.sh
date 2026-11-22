@@ -14,6 +14,7 @@
 #   ENCODER=nvfp4|int8|bf16    Bien the text encoder (mac dinh: nvfp4)
 #   WITH_EMBEDDINGS=1          Tai them 10 embedding hieu ung
 #   WITH_EXTRA_LORAS=0         Bo qua 2 LoRA them (DMAD 4step + character swap)
+#   UPDATE_COMFY=0             Bo qua buoc cap nhat ComfyUI len ban moi nhat
 #   WITH_PIXAROMA=0            Bo qua cai node ComfyUI-Pixaroma
 #   WITH_EP41=0                Bo qua tai workflow + anh/video mau Ep41 tu repo qj365/h3
 #   FORCE=1                    Ghi de workflow/input Ep41 neu da co (mac dinh: bo qua)
@@ -35,6 +36,7 @@ QUANT="${QUANT:-auto}"
 ENCODER="${ENCODER:-nvfp4}"
 WITH_EMBEDDINGS="${WITH_EMBEDDINGS:-0}"
 WITH_EXTRA_LORAS="${WITH_EXTRA_LORAS:-1}"
+UPDATE_COMFY="${UPDATE_COMFY:-1}"
 WITH_PIXAROMA="${WITH_PIXAROMA:-1}"
 WITH_EP41="${WITH_EP41:-1}"
 FORCE="${FORCE:-0}"
@@ -170,6 +172,42 @@ esac
 log "Diffusion:    *_${SUFFIX}"
 log "Text encoder: ${ENC_FILE}"
 log "Che do:       ${MODE}"
+
+# ---------- cap nhat ComfyUI ----------
+
+if [[ "$UPDATE_COMFY" == "1" ]]; then
+  echo
+  log "=== Cap nhat ComfyUI ==="
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "    git pull (nhanh master) + pip install -r requirements.txt"
+  elif ! command -v git >/dev/null 2>&1 || [[ ! -d "$COMFY_DIR/.git" ]]; then
+    warn "ComfyUI khong phai git clone (hoac thieu git) - bo qua cap nhat"
+  else
+    export GIT_TERMINAL_PROMPT=0
+    OLD_VER="$(git -C "$COMFY_DIR" describe --tags --always 2>/dev/null || echo '?')"
+    # Dang o detached HEAD (vd: checkout theo tag stable) -> chuyen ve master de lay ban moi nhat
+    if [[ "$(git -C "$COMFY_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)" == "HEAD" ]]; then
+      git -C "$COMFY_DIR" checkout -q master 2>/dev/null \
+        || warn "Khong chuyen duoc ve nhanh master (co thay doi cuc bo?)"
+    fi
+    if git -C "$COMFY_DIR" pull --ff-only -q; then
+      NEW_VER="$(git -C "$COMFY_DIR" describe --tags --always 2>/dev/null || echo '?')"
+      if [[ "$OLD_VER" == "$NEW_VER" ]]; then
+        ok "ComfyUI da la ban moi nhat ($NEW_VER)"
+      else
+        ok "ComfyUI: $OLD_VER -> $NEW_VER"
+      fi
+      if [[ -f "$COMFY_DIR/requirements.txt" ]]; then
+        log "Cap nhat thu vien python cua ComfyUI (khong dong vao torch)"
+        $PY -m pip install -q -r "$COMFY_DIR/requirements.txt" 2>/dev/null \
+          || $PY -m pip install -q --break-system-packages -r "$COMFY_DIR/requirements.txt" \
+          || warn "pip that bai - chay tay: $PY -m pip install -r $COMFY_DIR/requirements.txt"
+      fi
+    else
+      warn "git pull that bai (co thay doi cuc bo hoac nhanh khac master?) - giu ban hien tai ($OLD_VER)"
+    fi
+  fi
+fi
 
 # ---------- cong cu tai ----------
 
