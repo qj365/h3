@@ -242,10 +242,13 @@ download() {
   fi
 
   mkdir -p "$dir"
-  if [[ -s "$dest" ]]; then
+  # aria2c tao san file day du dung luong (toan so 0) ngay tu dau; file .aria2 con ton tai
+  # nghia la tai chua xong -> khong coi la "da co", de aria2c -c tiep tuc tai
+  if [[ -s "$dest" && ! -e "$dest.aria2" ]]; then
     ok "Da co: $name ($(du -h "$dest" | cut -f1))"
     return 0
   fi
+  [[ -e "$dest.aria2" ]] && warn "Tai do dang: $name - tiep tuc tai"
 
   log "Tai: $name"
   TOTAL=$((TOTAL + 1))
@@ -256,7 +259,7 @@ download() {
       [[ -n "${HF_TOKEN:-}" ]] && a=(--header "Authorization: Bearer $HF_TOKEN")
       aria2c -c -x8 -s8 -k1M --console-log-level=warn --summary-interval=15 \
         "${a[@]}" -d "$dir" -o "$name" "$url" \
-        || { rm -f "$dest.aria2"; die "Tai that bai: $name"; }
+        || die "Tai that bai: $name (chay lai script de tiep tuc tai)"
       ;;
     curl)
       local h=()
