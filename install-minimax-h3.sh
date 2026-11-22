@@ -363,6 +363,11 @@ if [[ "$WITH_EP41" == "1" ]]; then
     log "Tai $H3_TARBALL"
     fetch "$H3_TARBALL" | tar -xz -C "$TMP" --strip-components=1 \
       || { rm -rf "$TMP"; die "Khong tai/giai nen duoc repo qj365/h3 (repo private? sai nhanh H3_REF?)"; }
+    # Workflow luu duong dan model kieu Windows ("h3\\file"), Linux can "h3/file"
+    if [[ -d "$TMP/workflows" ]]; then
+      find "$TMP/workflows" -maxdepth 1 -name '*.json' -print0 \
+        | xargs -0 -r sed -i 's#"\([A-Za-z0-9_-]*\)\\\\\([^"\\]*\.safetensors"\)#"\1/\2#g'
+    fi
     copy_dir "$TMP/workflows" "$W"
     copy_dir "$TMP/input" "$COMFY_DIR/input"
     rm -rf "$TMP"
