@@ -18,8 +18,8 @@ Script cai:
 | 27 workflow Ep41 (file da co thi giu nguyen, `FORCE=1` de ghi de) | `user/default/workflows/` |
 | 37 anh/video/audio mau Ep41 | `input/` |
 
-Script cap nhat ComfyUI len ban moi nhat truoc khi tai, kiem tra sha256 sau khi tai va tu tai lai file hong.
-Tuy chon (`UPDATE_COMFY=0`, `WITH_PIXAROMA=0`, `FORCE=1`, `VERIFY=0`, `DRY_RUN=1`, `COMFY_DIR=...`) nam o dau file script.
+Script chay song song: cap nhat ComfyUI + cai Pixaroma + chep workflow chay nen trong luc tai model (toi da `JOBS=3` file cung luc), cap nhat ComfyUI len ban moi nhat, kiem tra sha256 sau khi tai va tu tai lai file hong.
+Tuy chon (`JOBS=3`, `UPDATE_COMFY=0`, `WITH_PIXAROMA=0`, `FORCE=1`, `VERIFY=0`, `DRY_RUN=1`, `COMFY_DIR=...`) nam o dau file script.
 
 ```bash
 DRY_RUN=1 COMFY_DIR=/workspace/ComfyUI bash <(curl -fsSL https://raw.githubusercontent.com/qj365/h3/main/install-minimax-h3.sh)

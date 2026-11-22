@@ -21,6 +21,7 @@
 #   WITH_PIXAROMA=0                Bo qua cai node Pixaroma
 #   FORCE=1                        Ghi de workflow/anh/video mau neu da co (mac dinh: bo qua file da co)
 #   VERIFY=0                       Bo qua kiem tra sha256 sau khi tai
+#   JOBS=3                         So file model tai song song (mac dinh: 3)
 #   H3_REF=main                    Nhanh cua repo qj365/h3
 #   DRY_RUN=1                      Chi liet ke, khong tai
 #   HF_TOKEN=hf_xxx                Token Hugging Face neu can
@@ -36,6 +37,7 @@ WITH_PIXAROMA="${WITH_PIXAROMA:-1}"
 FORCE="${FORCE:-0}"
 VERIFY="${VERIFY:-1}"
 H3_REF="${H3_REF:-main}"
+JOBS="${JOBS:-3}"
 DRY_RUN="${DRY_RUN:-0}"
 
 HF="https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main"
@@ -128,42 +130,6 @@ else
   warn "PyTorch $TORCH_VER khong phai cu130 - model int8_convrot co the khong chay"
 fi
 
-# ---------- cap nhat ComfyUI ----------
-
-if [[ "$UPDATE_COMFY" == "1" ]]; then
-  echo
-  log "=== Cap nhat ComfyUI ==="
-  if [[ "$DRY_RUN" == "1" ]]; then
-    echo "    git pull (nhanh master) + pip install -r requirements.txt"
-  elif ! command -v git >/dev/null 2>&1 || [[ ! -d "$COMFY_DIR/.git" ]]; then
-    warn "ComfyUI khong phai git clone (hoac thieu git) - bo qua cap nhat"
-  else
-    export GIT_TERMINAL_PROMPT=0
-    OLD_VER="$(git -C "$COMFY_DIR" describe --tags --always 2>/dev/null || echo '?')"
-    # Dang o detached HEAD (vd: checkout theo tag stable) -> chuyen ve master de lay ban moi nhat
-    if [[ "$(git -C "$COMFY_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)" == "HEAD" ]]; then
-      git -C "$COMFY_DIR" checkout -q master 2>/dev/null \
-        || warn "Khong chuyen duoc ve nhanh master (co thay doi cuc bo?)"
-    fi
-    if git -C "$COMFY_DIR" pull --ff-only -q; then
-      NEW_VER="$(git -C "$COMFY_DIR" describe --tags --always 2>/dev/null || echo '?')"
-      if [[ "$OLD_VER" == "$NEW_VER" ]]; then
-        ok "ComfyUI da la ban moi nhat ($NEW_VER)"
-      else
-        ok "ComfyUI: $OLD_VER -> $NEW_VER"
-      fi
-      if [[ -f "$COMFY_DIR/requirements.txt" ]]; then
-        log "Cap nhat thu vien python cua ComfyUI (khong dong vao torch)"
-        $PY -m pip install -q -r "$COMFY_DIR/requirements.txt" 2>/dev/null \
-          || $PY -m pip install -q --break-system-packages -r "$COMFY_DIR/requirements.txt" \
-          || warn "pip that bai - chay tay: $PY -m pip install -r $COMFY_DIR/requirements.txt"
-      fi
-    else
-      warn "git pull that bai (co thay doi cuc bo hoac nhanh khac master?) - giu ban hien tai ($OLD_VER)"
-    fi
-  fi
-fi
-
 # ---------- cong cu tai ----------
 
 if ! command -v aria2c >/dev/null 2>&1; then
@@ -185,7 +151,9 @@ else
   die "Can aria2c, curl hoac wget"
 fi
 
-TOTAL=0
+LOGDIR="$(mktemp -d)"
+cleanup() { if [[ -n "${LOGDIR:-}" ]]; then rm -rf "$LOGDIR"; fi; }
+trap cleanup EXIT
 
 # sha256 goc cua file LFS tren Hugging Face (header x-linked-etag); rong neu khong lay duoc
 remote_sha() {
@@ -278,7 +246,7 @@ download() {
 
   for attempt in 1 2; do
     log "Tai: $name"
-    TOTAL=$((TOTAL + 1))
+    echo x >> "$LOGDIR/total"
     fetch_file "$url" "$dest"
     if verify_file "$url" "$dest"; then
       ok "Xong: $name"
@@ -290,35 +258,43 @@ download() {
   die "File van sai sha256 sau 2 lan tai: $name (kiem tra mang/dia, hoac chay VERIFY=0 de bo qua)"
 }
 
-M="$COMFY_DIR/models"
-mkdir -p "$M"/{diffusion_models/h3,text_encoders,vae,loras/h3} \
-         "$COMFY_DIR/user/default/workflows" "$COMFY_DIR/input"
+# ---------- cap nhat ComfyUI ----------
 
-[[ "$DRY_RUN" == "1" ]] && { echo; warn "DRY_RUN=1 - chi liet ke file:"; echo; }
-
-# ---------- model ----------
-# Duong dan lay tu ghi chu "Download Models" trong chinh 2 workflow.
-# Workflow goi model/LoRA theo "h3/<file>" nen phai nam trong thu muc con h3.
-
-echo
-log "=== Model ==="
-download "$HF/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors" \
-         "$M/diffusion_models/h3/minimax_h3_ref2va_pruned_int8_convrot.safetensors"
-download "$HF/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors" \
-         "$M/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
-download "$HF/vae/minimax_h3_video_vae_int8_convrot.safetensors" \
-         "$M/vae/minimax_h3_video_vae_int8_convrot.safetensors"
-download "$HF/vae/minimax_h3_audio_vae_fp32.safetensors" \
-         "$M/vae/minimax_h3_audio_vae_fp32.safetensors"
-
-echo
-log "=== LoRA ==="
-download "$KJ/loras/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors" \
-         "$M/loras/h3/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors"
-download "$AX/loras/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors" \
-         "$M/loras/h3/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors"
-download "$AX/loras/minimax_h3_head_swap_v1.0_r32.safetensors" \
-         "$M/loras/h3/minimax_h3_head_swap_v1.0_r32.safetensors"
+step_update() {
+  if [[ "$UPDATE_COMFY" == "1" ]]; then
+    echo
+    log "=== Cap nhat ComfyUI ==="
+    if [[ "$DRY_RUN" == "1" ]]; then
+      echo "    git pull (nhanh master) + pip install -r requirements.txt"
+    elif ! command -v git >/dev/null 2>&1 || [[ ! -d "$COMFY_DIR/.git" ]]; then
+      warn "ComfyUI khong phai git clone (hoac thieu git) - bo qua cap nhat"
+    else
+      export GIT_TERMINAL_PROMPT=0
+      OLD_VER="$(git -C "$COMFY_DIR" describe --tags --always 2>/dev/null || echo '?')"
+      # Dang o detached HEAD (vd: checkout theo tag stable) -> chuyen ve master de lay ban moi nhat
+      if [[ "$(git -C "$COMFY_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)" == "HEAD" ]]; then
+        git -C "$COMFY_DIR" checkout -q master 2>/dev/null \
+          || warn "Khong chuyen duoc ve nhanh master (co thay doi cuc bo?)"
+      fi
+      if git -C "$COMFY_DIR" pull --ff-only -q; then
+        NEW_VER="$(git -C "$COMFY_DIR" describe --tags --always 2>/dev/null || echo '?')"
+        if [[ "$OLD_VER" == "$NEW_VER" ]]; then
+          ok "ComfyUI da la ban moi nhat ($NEW_VER)"
+        else
+          ok "ComfyUI: $OLD_VER -> $NEW_VER"
+        fi
+        if [[ -f "$COMFY_DIR/requirements.txt" ]]; then
+          log "Cap nhat thu vien python cua ComfyUI (khong dong vao torch)"
+          $PY -m pip install -q -r "$COMFY_DIR/requirements.txt" 2>/dev/null \
+            || $PY -m pip install -q --break-system-packages -r "$COMFY_DIR/requirements.txt" \
+            || warn "pip that bai - chay tay: $PY -m pip install -r $COMFY_DIR/requirements.txt"
+        fi
+      else
+        warn "git pull that bai (co thay doi cuc bo hoac nhanh khac master?) - giu ban hien tai ($OLD_VER)"
+      fi
+    fi
+  fi
+}
 
 # ---------- workflow + file mau (tai du bo 27 workflow + 37 file mau, deu nhe) ----------
 
@@ -348,87 +324,169 @@ copy_dir() {
   ok "$(basename "$src") -> $dst  (moi: $new, bo qua vi da co: $skip)"
 }
 
-echo
-log "=== Workflow + file mau (qj365/h3@${H3_REF}) ==="
-W="$COMFY_DIR/user/default/workflows"
+step_workflows() {
+  echo
+  log "=== Workflow + file mau (qj365/h3@${H3_REF}) ==="
+  W="$COMFY_DIR/user/default/workflows"
 
-if [[ "$DRY_RUN" == "1" ]]; then
-  echo "    workflows/*.json (27 file) -> $W"
-  echo "    input/*          (37 file) -> $COMFY_DIR/input"
-else
-  TMP="$(mktemp -d)"
-  log "Tai https://codeload.github.com/qj365/h3/tar.gz/refs/heads/${H3_REF}"
-  fetch "https://codeload.github.com/qj365/h3/tar.gz/refs/heads/${H3_REF}" \
-    | tar -xz -C "$TMP" --strip-components=1 \
-    || { rm -rf "$TMP"; die "Khong tai/giai nen duoc repo qj365/h3 (repo private? sai nhanh H3_REF?)"; }
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "    workflows/*.json (27 file) -> $W"
+    echo "    input/*          (37 file) -> $COMFY_DIR/input"
+  else
+    TMP="$(mktemp -d)"
+    log "Tai https://codeload.github.com/qj365/h3/tar.gz/refs/heads/${H3_REF}"
+    fetch "https://codeload.github.com/qj365/h3/tar.gz/refs/heads/${H3_REF}" \
+      | tar -xz -C "$TMP" --strip-components=1 \
+      || { rm -rf "$TMP"; die "Khong tai/giai nen duoc repo qj365/h3 (repo private? sai nhanh H3_REF?)"; }
 
-  copy_dir "$TMP/workflows" "$W"
-  copy_dir "$TMP/input" "$COMFY_DIR/input"
+    copy_dir "$TMP/workflows" "$W"
+    copy_dir "$TMP/input" "$COMFY_DIR/input"
 
-  # Workflow luu duong dan model kieu Windows ("h3\\file"), Linux can "h3/file".
-  # Sua tren ban da cai (ke ca ban chep o lan chay truoc) cho moi workflow co trong repo.
-  if [[ -d "$TMP/workflows" ]]; then
-    find "$TMP/workflows" -maxdepth 1 -name '*.json' -print0 | while IFS= read -r -d '' f; do
-      if [[ -f "$W/$(basename "$f")" ]]; then
-        sed -i 's#"\([A-Za-z0-9_-]*\)\\\\\([^"\\]*\.safetensors"\)#"\1/\2#g' "$W/$(basename "$f")"
-      fi
-    done
+    # Workflow luu duong dan model kieu Windows ("h3\\file"), Linux can "h3/file".
+    # Sua tren ban da cai (ke ca ban chep o lan chay truoc) cho moi workflow co trong repo.
+    if [[ -d "$TMP/workflows" ]]; then
+      find "$TMP/workflows" -maxdepth 1 -name '*.json' -print0 | while IFS= read -r -d '' f; do
+        if [[ -f "$W/$(basename "$f")" ]]; then
+          sed -i 's#"\([A-Za-z0-9_-]*\)\\\\\([^"\\]*\.safetensors"\)#"\1/\2#g' "$W/$(basename "$f")"
+        fi
+      done
+    fi
+    rm -rf "$TMP"
   fi
-  rm -rf "$TMP"
-fi
+}
 
 # ---------- node ComfyUI-Pixaroma ----------
 
-if [[ "$WITH_PIXAROMA" == "1" ]]; then
-  echo
-  log "=== Node ComfyUI-Pixaroma ==="
-  CN="$COMFY_DIR/custom_nodes"
-  PX="$CN/ComfyUI-Pixaroma"
+step_pixaroma() {
+  if [[ "$WITH_PIXAROMA" == "1" ]]; then
+    echo
+    log "=== Node ComfyUI-Pixaroma ==="
+    CN="$COMFY_DIR/custom_nodes"
+    PX="$CN/ComfyUI-Pixaroma"
 
-  if [[ "$DRY_RUN" == "1" ]]; then
-    echo "    ${PIXAROMA_URLS[0]} -> $PX"
-  elif ! command -v git >/dev/null 2>&1; then
-    warn "Khong co git - bo qua Pixaroma. Cai git roi chay lai, hoac cai qua ComfyUI Manager (tim 'Pixaroma')"
-  else
-    export GIT_TERMINAL_PROMPT=0
-    mkdir -p "$CN"
-    PX_OK=0
-    if [[ -d "$PX/.git" ]]; then
-      log "Da co Pixaroma - cap nhat"
-      git -C "$PX" pull --ff-only -q || warn "Cap nhat Pixaroma that bai, giu ban hien tai"
-      PX_OK=1
-    elif [[ -d "$PX" ]]; then
-      ok "Da co Pixaroma (khong phai git clone, giu nguyen): $PX"
-      PX_OK=1
+    if [[ "$DRY_RUN" == "1" ]]; then
+      echo "    ${PIXAROMA_URLS[0]} -> $PX"
+    elif ! command -v git >/dev/null 2>&1; then
+      warn "Khong co git - bo qua Pixaroma. Cai git roi chay lai, hoac cai qua ComfyUI Manager (tim 'Pixaroma')"
     else
-      for u in "${PIXAROMA_URLS[@]}"; do
-        log "Clone $u"
-        if git clone --depth 1 -q "$u" "$PX"; then PX_OK=1; ok "Da cai Pixaroma"; break; fi
-        rm -rf "$PX"
-        warn "Clone that bai, thu nguon khac"
-      done
-      [[ "$PX_OK" == "1" ]] || warn "Khong clone duoc Pixaroma - cai tay qua ComfyUI Manager"
-    fi
-
-    if [[ "$PX_OK" == "1" && -f "$PX/requirements.txt" ]]; then
-      log "Cai thu vien python cua Pixaroma"
-      $PY -m pip install -q -r "$PX/requirements.txt" 2>/dev/null \
-        || $PY -m pip install -q --break-system-packages -r "$PX/requirements.txt" \
-        || warn "pip that bai - cai tay: $PY -m pip install -r $PX/requirements.txt"
-    fi
-
-    # Node video cua Pixaroma can ffmpeg (git clone khong tu cai ffmpeg)
-    if [[ "$PX_OK" == "1" ]] && ! command -v ffmpeg >/dev/null 2>&1; then
-      if command -v apt-get >/dev/null 2>&1 && [[ "$(id -u)" == "0" ]]; then
-        log "Dang cai ffmpeg"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >/dev/null 2>&1 \
-          && ok "Da cai ffmpeg" || warn "Cai ffmpeg that bai - node video Pixaroma co the loi"
+      export GIT_TERMINAL_PROMPT=0
+      mkdir -p "$CN"
+      PX_OK=0
+      if [[ -d "$PX/.git" ]]; then
+        log "Da co Pixaroma - cap nhat"
+        git -C "$PX" pull --ff-only -q || warn "Cap nhat Pixaroma that bai, giu ban hien tai"
+        PX_OK=1
+      elif [[ -d "$PX" ]]; then
+        ok "Da co Pixaroma (khong phai git clone, giu nguyen): $PX"
+        PX_OK=1
       else
-        warn "Chua co ffmpeg - node video cua Pixaroma co the loi. Cai: apt-get install ffmpeg"
+        for u in "${PIXAROMA_URLS[@]}"; do
+          log "Clone $u"
+          if git clone --depth 1 -q "$u" "$PX"; then PX_OK=1; ok "Da cai Pixaroma"; break; fi
+          rm -rf "$PX"
+          warn "Clone that bai, thu nguon khac"
+        done
+        [[ "$PX_OK" == "1" ]] || warn "Khong clone duoc Pixaroma - cai tay qua ComfyUI Manager"
+      fi
+
+      if [[ "$PX_OK" == "1" && -f "$PX/requirements.txt" ]]; then
+        log "Cai thu vien python cua Pixaroma"
+        $PY -m pip install -q -r "$PX/requirements.txt" 2>/dev/null \
+          || $PY -m pip install -q --break-system-packages -r "$PX/requirements.txt" \
+          || warn "pip that bai - cai tay: $PY -m pip install -r $PX/requirements.txt"
+      fi
+
+      # Node video cua Pixaroma can ffmpeg (git clone khong tu cai ffmpeg)
+      if [[ "$PX_OK" == "1" ]] && ! command -v ffmpeg >/dev/null 2>&1; then
+        if command -v apt-get >/dev/null 2>&1 && [[ "$(id -u)" == "0" ]]; then
+          log "Dang cai ffmpeg"
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >/dev/null 2>&1 \
+            && ok "Da cai ffmpeg" || warn "Cai ffmpeg that bai - node video Pixaroma co the loi"
+        else
+          warn "Chua co ffmpeg - node video cua Pixaroma co the loi. Cai: apt-get install ffmpeg"
+        fi
       fi
     fi
   fi
+}
+
+M="$COMFY_DIR/models"
+mkdir -p "$M"/{diffusion_models/h3,text_encoders,vae,loras/h3} \
+         "$COMFY_DIR/user/default/workflows" "$COMFY_DIR/input"
+
+
+# ---------- chay song song ----------
+# - Chuoi A (nen): cap nhat ComfyUI -> cai Pixaroma (tuan tu vi cung dung pip)
+# - Chuoi B (nen): workflow + file mau
+# - Model: tai song song toi da $JOBS file; sha256 cua file nay chay trong luc file khac van dang tai
+# DRY_RUN hoac bash cu (<4.3, khong co wait -n): chay tuan tu.
+
+PARALLEL=1
+if [[ "$DRY_RUN" == "1" ]] || (( BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] < 403 )); then
+  PARALLEL=0
 fi
+[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || JOBS=3
+
+bg() { # chay lenh (ham download) song song, gioi han $JOBS tien trinh
+  if [[ "$PARALLEL" == "0" ]]; then "$@"; return; fi
+  while (( $(jobs -pr | wc -l) >= JOBS )); do wait -n || true; done
+  { ( "$@" ) || : > "$LOGDIR/fail"; } &
+}
+
+[[ "$DRY_RUN" == "1" ]] && { echo; warn "DRY_RUN=1 - chi liet ke file:"; echo; }
+
+if [[ "$PARALLEL" == "1" ]]; then
+  [[ "$UPDATE_COMFY" == "1" || "$WITH_PIXAROMA" == "1" ]] && log "Cap nhat ComfyUI / cai Pixaroma chay nen..."
+  {
+    (
+      [[ "$UPDATE_COMFY" == "1" ]] && step_update
+      [[ "$WITH_PIXAROMA" == "1" ]] && step_pixaroma
+      true
+    ) > "$LOGDIR/a.log" 2>&1 || : > "$LOGDIR/fail_a"
+  } &
+  { ( step_workflows ) > "$LOGDIR/b.log" 2>&1 || : > "$LOGDIR/fail_b"; } &
+else
+  [[ "$UPDATE_COMFY" == "1" ]] && step_update
+  step_workflows
+  [[ "$WITH_PIXAROMA" == "1" ]] && step_pixaroma
+fi
+
+# ---------- model ----------
+# Duong dan lay tu ghi chu "Download Models" trong chinh 2 workflow.
+# Workflow goi model/LoRA theo "h3/<file>" nen phai nam trong thu muc con h3.
+
+echo
+log "=== Model ==="
+bg download "$HF/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors" \
+         "$M/diffusion_models/h3/minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+bg download "$HF/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors" \
+         "$M/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+bg download "$HF/vae/minimax_h3_video_vae_int8_convrot.safetensors" \
+         "$M/vae/minimax_h3_video_vae_int8_convrot.safetensors"
+bg download "$HF/vae/minimax_h3_audio_vae_fp32.safetensors" \
+         "$M/vae/minimax_h3_audio_vae_fp32.safetensors"
+
+echo
+log "=== LoRA ==="
+bg download "$KJ/loras/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors" \
+         "$M/loras/h3/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors"
+bg download "$AX/loras/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors" \
+         "$M/loras/h3/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors"
+bg download "$AX/loras/minimax_h3_head_swap_v1.0_r32.safetensors" \
+         "$M/loras/h3/minimax_h3_head_swap_v1.0_r32.safetensors"
+
+wait   # cho tat ca tien trinh nen
+
+if [[ "$PARALLEL" == "1" ]]; then
+  echo
+  [[ -s "$LOGDIR/a.log" ]] && cat "$LOGDIR/a.log"
+  [[ -s "$LOGDIR/b.log" ]] && cat "$LOGDIR/b.log"
+  [[ -e "$LOGDIR/fail_a" ]] && warn "Buoc cap nhat ComfyUI / cai Pixaroma co loi (xem log o tren)"
+  [[ -e "$LOGDIR/fail_b" ]] && die "Buoc tai workflow + file mau that bai"
+  [[ -e "$LOGDIR/fail" ]] && die "Co file model tai that bai (xem loi o tren). Chay lai script de tiep tuc tai."
+fi
+TOTAL=0
+[[ -s "$LOGDIR/total" ]] && TOTAL="$(wc -l < "$LOGDIR/total")"
 
 # ---------- tong ket ----------
 
