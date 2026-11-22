@@ -13,13 +13,13 @@
 #   - Node ComfyUI-Pixaroma (+ ffmpeg cho node video)
 #   - Model: ref2va int8 (diffusion_models/h3), text encoder Qwen3-VL nvfp4, VAE video int8, VAE audio,
 #            LoRA DMAD 4step + character swap + head swap (loras/h3)
-#   - Workflow 02 + 04 vao user/default/workflows, 3 file mau (video + 2 anh) vao input
+#   - Du bo 27 workflow Ep41 vao user/default/workflows + 37 anh/video/audio mau vao input
 #
 # Bien moi truong (deu tuy chon):
 #   COMFY_DIR=/workspace/ComfyUI   Thu muc ComfyUI (mac dinh: tu tim)
 #   UPDATE_COMFY=0                 Bo qua buoc cap nhat ComfyUI
 #   WITH_PIXAROMA=0                Bo qua cai node Pixaroma
-#   FORCE=1                        Ghi de workflow/anh/video mau neu da co
+#   FORCE=1                        Ghi de workflow/anh/video mau neu da co (mac dinh: bo qua file da co)
 #   VERIFY=0                       Bo qua kiem tra sha256 sau khi tai
 #   H3_REF=main                    Nhanh cua repo qj365/h3
 #   DRY_RUN=1                      Chi liet ke, khong tai
@@ -320,32 +320,61 @@ download "$AX/loras/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors" \
 download "$AX/loras/minimax_h3_head_swap_v1.0_r32.safetensors" \
          "$M/loras/h3/minimax_h3_head_swap_v1.0_r32.safetensors"
 
-# ---------- workflow + file mau ----------
+# ---------- workflow + file mau (tai du bo 27 workflow + 37 file mau, deu nhe) ----------
 
-# Cac file nay nho, tai lai khi FORCE=1 (hoac chua co) - khong kiem tra sha256
+fetch() {
+  if command -v curl >/dev/null 2>&1; then curl -fsSL "$1"
+  elif command -v wget >/dev/null 2>&1; then wget -qO- "$1"
+  else return 1; fi
+}
+
+# copy_dir <nguon> <dich> : chi chep file, bo qua file da co tru khi FORCE=1
+copy_dir() {
+  local src="$1" dst="$2" f n new=0 skip=0
+  if [[ ! -d "$src" ]]; then
+    warn "Repo khong co thu muc $(basename "$src")"
+    return 0
+  fi
+  mkdir -p "$dst"
+  while IFS= read -r -d '' f; do
+    n="$(basename "$f")"
+    if [[ -e "$dst/$n" && "$FORCE" != "1" ]]; then
+      skip=$((skip + 1))
+    else
+      cp -f "$f" "$dst/$n"
+      new=$((new + 1))
+    fi
+  done < <(find "$src" -maxdepth 1 -type f -print0)
+  ok "$(basename "$src") -> $dst  (moi: $new, bo qua vi da co: $skip)"
+}
+
 echo
 log "=== Workflow + file mau (qj365/h3@${H3_REF}) ==="
 W="$COMFY_DIR/user/default/workflows"
-enc() { printf '%s' "${1// /%20}"; }
 
-get_small() { # <duong dan trong repo> <thu muc dich>
-  local rel="$1" dstdir="$2" name
-  name="$(basename "$rel")"
-  [[ "$FORCE" == "1" && "$DRY_RUN" != "1" ]] && rm -f "$dstdir/$name"
-  download "$H3_RAW/$(enc "$rel")" "$dstdir/$name"
-}
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "    workflows/*.json (27 file) -> $W"
+  echo "    input/*          (37 file) -> $COMFY_DIR/input"
+else
+  TMP="$(mktemp -d)"
+  log "Tai https://codeload.github.com/qj365/h3/tar.gz/refs/heads/${H3_REF}"
+  fetch "https://codeload.github.com/qj365/h3/tar.gz/refs/heads/${H3_REF}" \
+    | tar -xz -C "$TMP" --strip-components=1 \
+    || { rm -rf "$TMP"; die "Khong tai/giai nen duoc repo qj365/h3 (repo private? sai nhanh H3_REF?)"; }
 
-get_small "workflows/02. Minimax H3 - Character Swap LoRA.json" "$W"
-get_small "workflows/04. Minimax H3 - Head Swap LoRA.json" "$W"
-get_small "input/Ep41 Man Talking 10s.mp4" "$COMFY_DIR/input"
-get_small "input/Ep41 Knight Face Clean.jpg" "$COMFY_DIR/input"
-get_small "input/Ep41 Knight Sheet.jpg" "$COMFY_DIR/input"
+  copy_dir "$TMP/workflows" "$W"
+  copy_dir "$TMP/input" "$COMFY_DIR/input"
 
-# Workflow luu duong dan model kieu Windows ("h3\\file"), Linux can "h3/file"
-if [[ "$DRY_RUN" != "1" ]]; then
-  for f in "$W/02. Minimax H3 - Character Swap LoRA.json" "$W/04. Minimax H3 - Head Swap LoRA.json"; do
-    [[ -f "$f" ]] && sed -i 's#"\([A-Za-z0-9_-]*\)\\\\\([^"\\]*\.safetensors"\)#"\1/\2#g' "$f"
-  done
+  # Workflow luu duong dan model kieu Windows ("h3\\file"), Linux can "h3/file".
+  # Sua tren ban da cai (ke ca ban chep o lan chay truoc) cho moi workflow co trong repo.
+  if [[ -d "$TMP/workflows" ]]; then
+    find "$TMP/workflows" -maxdepth 1 -name '*.json' -print0 | while IFS= read -r -d '' f; do
+      if [[ -f "$W/$(basename "$f")" ]]; then
+        sed -i 's#"\([A-Za-z0-9_-]*\)\\\\\([^"\\]*\.safetensors"\)#"\1/\2#g' "$W/$(basename "$f")"
+      fi
+    done
+  fi
+  rm -rf "$TMP"
 fi
 
 # ---------- node ComfyUI-Pixaroma ----------
@@ -418,8 +447,7 @@ cat <<EOF
 Buoc tiep theo:
   1. Khoi dong lai ComfyUI
   2. Tren trinh duyet bam Ctrl+Shift+R (de nap node Pixaroma)
-  3. Workflow > Browse > chon:
-       02. Minimax H3 - Character Swap LoRA
-       04. Minimax H3 - Head Swap LoRA
+  3. Workflow > Browse > chon 02. Character Swap LoRA hoac 04. Head Swap LoRA
+     (cac workflow con lai can them model rieng - script chi tai model cua 02 va 04)
   4. Node Load CLIP phai de type = minimax
 EOF
