@@ -13,7 +13,12 @@
 #   QUANT=auto|int8|fp8|bf16   Bien the diffusion (mac dinh: auto theo PyTorch)
 #   ENCODER=nvfp4|int8|bf16    Bien the text encoder (mac dinh: nvfp4)
 #   WITH_EMBEDDINGS=1          Tai them 10 embedding hieu ung
-#   WITH_EXTRA_LORAS=0         Bo qua 2 LoRA them (DMAD 4step + character swap)
+#   EP41_MODELS=core|all|0     Model cho workflow Ep41 (mac dinh: core)
+#                                core = ref2va int8 (diffusion_models/h3), VAE video int8,
+#                                       LoRA DMAD 4step + character swap + head swap (loras/h3)
+#                                all  = core + LoRA lms/vfx/style/regenerate2k, RealESRGAN,
+#                                       latent upscaler, controlnet pose, SDPose, Flux Klein
+#   VERIFY=0                   Bo qua kiem tra sha256 sau khi tai (mac dinh: kiem tra)
 #   UPDATE_COMFY=0             Bo qua buoc cap nhat ComfyUI len ban moi nhat
 #   WITH_PIXAROMA=0            Bo qua cai node ComfyUI-Pixaroma
 #   WITH_EP41=0                Bo qua tai workflow + anh/video mau Ep41 tu repo qj365/h3
@@ -35,7 +40,8 @@ MODE="${MODE:-i2v}"
 QUANT="${QUANT:-auto}"
 ENCODER="${ENCODER:-nvfp4}"
 WITH_EMBEDDINGS="${WITH_EMBEDDINGS:-0}"
-WITH_EXTRA_LORAS="${WITH_EXTRA_LORAS:-1}"
+EP41_MODELS="${EP41_MODELS:-core}"
+VERIFY="${VERIFY:-1}"
 UPDATE_COMFY="${UPDATE_COMFY:-1}"
 WITH_PIXAROMA="${WITH_PIXAROMA:-1}"
 WITH_EP41="${WITH_EP41:-1}"
@@ -231,28 +237,37 @@ else
 fi
 
 TOTAL=0
-download() {
-  local url="$1" dest="$2"
-  local name dir
+
+# sha256 goc cua file LFS tren Hugging Face (header x-linked-etag); rong neu khong lay duoc
+remote_sha() {
+  command -v curl >/dev/null 2>&1 || return 0
+  local h=()
+  [[ -n "${HF_TOKEN:-}" ]] && h=(-H "Authorization: Bearer $HF_TOKEN")
+  curl -sIL "${h[@]}" "$1" 2>/dev/null | tr -d '\r' \
+    | awk -F': ' 'tolower($1)=="x-linked-etag"{gsub(/"/,"",$2); print $2; exit}' || true
+}
+
+# verify_file <url> <dest> : 0 = dung hoac khong kiem tra duoc, 1 = sai sha256
+verify_file() {
+  local url="$1" dest="$2" want got
+  [[ "$VERIFY" == "1" ]] || return 0
+  [[ "$dest" == *.safetensors || "$dest" == *.pth ]] || return 0
+  command -v sha256sum >/dev/null 2>&1 || return 0
+  [[ -e "$dest.verified" ]] && return 0
+  want="$(remote_sha "$url")"
+  [[ -n "$want" ]] || return 0
+  log "Kiem tra sha256: $(basename "$dest") (file lon, doi chut)"
+  got="$(sha256sum "$dest" | cut -d' ' -f1)"
+  if [[ "$got" == "$want" ]]; then
+    : > "$dest.verified"
+    return 0
+  fi
+  return 1
+}
+
+fetch_file() {
+  local url="$1" dest="$2" name dir
   name="$(basename "$dest")"; dir="$(dirname "$dest")"
-
-  if [[ "$DRY_RUN" == "1" ]]; then
-    echo "    $name"
-    return 0
-  fi
-
-  mkdir -p "$dir"
-  # aria2c tao san file day du dung luong (toan so 0) ngay tu dau; file .aria2 con ton tai
-  # nghia la tai chua xong -> khong coi la "da co", de aria2c -c tiep tuc tai
-  if [[ -s "$dest" && ! -e "$dest.aria2" ]]; then
-    ok "Da co: $name ($(du -h "$dest" | cut -f1))"
-    return 0
-  fi
-  [[ -e "$dest.aria2" ]] && warn "Tai do dang: $name - tiep tuc tai"
-
-  log "Tai: $name"
-  TOTAL=$((TOTAL + 1))
-
   case "$DL" in
     aria2c)
       local a=()
@@ -265,16 +280,52 @@ download() {
       local h=()
       [[ -n "${HF_TOKEN:-}" ]] && h=(--header "Authorization: Bearer $HF_TOKEN")
       curl -fL --progress-bar -C - "${h[@]}" -o "$dest.part" "$url" \
-        || { rm -f "$dest.part"; die "Tai that bai: $name"; }
+        || die "Tai that bai: $name (chay lai script de tiep tuc tai)"
       mv "$dest.part" "$dest" ;;
     wget)
       local w=()
       [[ -n "${HF_TOKEN:-}" ]] && w=(--header="Authorization: Bearer $HF_TOKEN")
       wget -c "${w[@]}" -O "$dest.part" "$url" \
-        || { rm -f "$dest.part"; die "Tai that bai: $name"; }
+        || die "Tai that bai: $name (chay lai script de tiep tuc tai)"
       mv "$dest.part" "$dest" ;;
   esac
-  ok "Xong: $name"
+}
+
+download() {
+  local url="$1" dest="$2"
+  local name dir attempt
+  name="$(basename "$dest")"; dir="$(dirname "$dest")"
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "    $name"
+    return 0
+  fi
+
+  mkdir -p "$dir"
+  # aria2c tao san file day du dung luong (toan so 0) ngay tu dau; file .aria2 con ton tai
+  # nghia la tai chua xong -> khong coi la "da co", de aria2c -c tiep tuc tai
+  if [[ -s "$dest" && ! -e "$dest.aria2" ]]; then
+    if verify_file "$url" "$dest"; then
+      ok "Da co: $name ($(du -h "$dest" | cut -f1))"
+      return 0
+    fi
+    warn "File hong (sai sha256): $name - xoa va tai lai"
+    rm -f "$dest" "$dest.verified"
+  fi
+  [[ -e "$dest.aria2" ]] && warn "Tai do dang: $name - tiep tuc tai"
+
+  for attempt in 1 2; do
+    log "Tai: $name"
+    TOTAL=$((TOTAL + 1))
+    fetch_file "$url" "$dest"
+    if verify_file "$url" "$dest"; then
+      ok "Xong: $name"
+      return 0
+    fi
+    warn "Sai sha256 sau khi tai: $name"
+    rm -f "$dest" "$dest.aria2" "$dest.verified"
+  done
+  die "File van sai sha256 sau 2 lan tai: $name (kiem tra mang/dia, hoac chay VERIFY=0 de bo qua)"
 }
 
 M="$COMFY_DIR/models"
@@ -303,22 +354,68 @@ fi
 if [[ "$MODE" == "r2v" || "$MODE" == "all" ]]; then
   echo
   log "=== ref2va (R2V) ==="
-  download "$HF/diffusion_models/minimax_h3_ref2va_${SUFFIX}.safetensors" \
-           "$M/diffusion_models/minimax_h3_ref2va_${SUFFIX}.safetensors"
+  if [[ "$SUFFIX" == "pruned_int8_convrot" && "$EP41_MODELS" != "0" ]]; then
+    echo "    (dung ban trong diffusion_models/h3 o phan Ep41, tao symlink)"
+  else
+    download "$HF/diffusion_models/minimax_h3_ref2va_${SUFFIX}.safetensors" \
+             "$M/diffusion_models/minimax_h3_ref2va_${SUFFIX}.safetensors"
+  fi
 fi
 
-# ---------- LoRA them ----------
+# ---------- model cho workflow Ep41 ----------
+# Duong dan/thu muc lay tu chinh ghi chu "Download Models" trong cac workflow Ep41.
+# Workflow goi model theo "h3/<file>" nen phai nam trong thu muc con h3.
 
-if [[ "$WITH_EXTRA_LORAS" == "1" ]]; then
+if [[ "$EP41_MODELS" != "0" ]]; then
   echo
-  log "=== LoRA them ==="
-  # Workflow Ep41 goi LoRA theo duong dan "h3/<ten file>" nen phai nam trong loras/h3
-  # DMAD 4 buoc
+  log "=== Ep41 model (${EP41_MODELS}) ==="
+  # Diffusion ref2va int8 (can PyTorch cu130)
+  download "$HF/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors" \
+           "$M/diffusion_models/h3/minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+  # VAE video int8 (workflow Ep41 dung ban nay, khac ban fp16 o tren)
+  download "$HF/vae/minimax_h3_video_vae_int8_convrot.safetensors" \
+           "$M/vae/minimax_h3_video_vae_int8_convrot.safetensors"
+  # LoRA
   download "$KJ/loras/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors" \
            "$M/loras/h3/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors"
-  # Character swap cho ref2va
   download "$AX/loras/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors" \
            "$M/loras/h3/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors"
+  download "$AX/loras/minimax_h3_head_swap_v1.0_r32.safetensors" \
+           "$M/loras/h3/minimax_h3_head_swap_v1.0_r32.safetensors"
+
+  if [[ "$EP41_MODELS" == "all" ]]; then
+    download "$AX/loras/minimax_h3_lms_v1.0_r64.safetensors" \
+             "$M/loras/h3/minimax_h3_lms_v1.0_r64.safetensors"
+    download "$AX/loras/minimax_h3_vfx_edit_v1.0_r128.safetensors" \
+             "$M/loras/h3/minimax_h3_vfx_edit_v1.0_r128.safetensors"
+    download "$AX/loras/minimax_h3_style_transfer_v1.0_r64.safetensors" \
+             "$M/loras/h3/minimax_h3_style_transfer_v1.0_r64.safetensors"
+    download "https://huggingface.co/DrakenZA/Open-H3-Regenerate-2K-ComfyUI/resolve/main/open_h3_regenerate_2k_comfy_swiglu_fixed.safetensors" \
+             "$M/loras/h3/open_h3_regenerate_2k_comfy_swiglu_fixed.safetensors"
+    download "https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x2.pth" \
+             "$M/upscale_models/RealESRGAN_x2.pth"
+    download "https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/resolve/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors" \
+             "$M/latent_upscale_models/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors"
+    download "$HF/model_patches/minimax_h3_fun_controlnet_union_pruned_int8_convrot.safetensors" \
+             "$M/model_patches/minimax_h3_fun_controlnet_union_pruned_int8_convrot.safetensors"
+    download "https://huggingface.co/Comfy-Org/SDPose/resolve/main/checkpoints/sdpose_wholebody_fp16.safetensors" \
+             "$M/checkpoints/sdpose_wholebody_fp16.safetensors"
+    download "https://huggingface.co/Comfy-Org/SDPose/resolve/main/diffusion_models/rt_detr_v4-x-hgnet_fp16.safetensors" \
+             "$M/diffusion_models/rt_detr_v4-x-hgnet_fp16.safetensors"
+    download "https://huggingface.co/Winnougan/Klein9b-Distilled-Base-INT8-Convrot/resolve/main/flux-2-klein-9b-int8-convrot.safetensors" \
+             "$M/diffusion_models/flux2/flux-2-klein-9b-int8-convrot.safetensors"
+    download "https://huggingface.co/Comfy-Org/flux2-klein-9B/resolve/main/split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors" \
+             "$M/text_encoders/qwen_3_8b_fp8mixed.safetensors"
+    download "https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors" \
+             "$M/vae/flux2-vae.safetensors"
+  fi
+
+  # Template Comfy goi ref2va int8 o thu muc goc -> symlink toi ban trong h3/
+  R2V_LINK="$M/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+  if [[ "$DRY_RUN" != "1" && ( "$MODE" == "r2v" || "$MODE" == "all" ) ]] \
+     && [[ ! -e "$R2V_LINK" || -L "$R2V_LINK" ]]; then
+    ln -sf "h3/minimax_h3_ref2va_pruned_int8_convrot.safetensors" "$R2V_LINK"
+  fi
 fi
 
 # ---------- embeddings ----------
